@@ -437,7 +437,7 @@ next_extent:
 
         case ECMA_TerminatingDescriptor:
             udf_trace("Terminating Descriptor in lba %u\n", lba);
-            return (have_part && have_lvd && have_pvd) ? 0 : -1;
+            return (have_part && have_lvd) ? 0 : -1;
         }
 
         if (have_part && have_lvd && have_pvd) {
@@ -446,7 +446,7 @@ next_extent:
         }
     }
 
-    return (have_part && have_lvd && have_pvd) ? 0 : -1;
+    return (have_part && have_lvd) ? 0 : -1;
 }
 
 static int _read_vds(udfread_block_input *input, int part_number,
