@@ -782,6 +782,13 @@ udfread *udfread_init(void)
 
     udf->partition_to_open = UDFREAD_PARTITION_FIRST;
 
+    if (getenv("UDFREAD_TRACE")) {
+        udf->lc_storage.level  = UDFREAD_LOG_TRACE;
+    } else if (getenv("UDFREAD_LOG")) {
+        udf->lc_storage.level  = UDFREAD_LOG_INFO;
+    } else {
+        udf->lc_storage.level  = UDFREAD_LOG_ERROR;
+    }
     udf->lc_storage.ctx    = stderr;
     udf->lc_storage.logger = (ecma_logger)fprintf;
     udf->ecma.lc = &udf->lc_storage;
