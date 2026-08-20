@@ -2,6 +2,12 @@
  * This file is part of libudfread
  * Copyright (C) 2014-2015 VLC authors and VideoLAN
  *
+ * MODIFIED FILE — this is not upstream libudfread. It selects the partition
+ * named by the Logical Volume Descriptor instead of requiring partition
+ * number 0; the change is marked below and its rationale is in this fork's
+ * CMakeLists.txt. The modification is covered by the same licence as the
+ * file it modifies.
+ *
  * Authors: Petri Hintukainen <phintuka@users.sourceforge.net>
  *
  * This library is free software; you can redistribute it and/or
@@ -1205,6 +1211,38 @@ error:
  * Volume access API
  */
 
+/* The partition number named by the LVD's type 1 partition map, or -1 if it names
+ * none. Mirrors the map walk in _parse_udf_partition_maps above, which validates
+ * this same value against the partition descriptor that was selected.
+ */
+static int _lvd_type1_partition(const struct logical_volume_descriptor *lvd)
+{
+    const uint8_t *map   = lvd->partition_map_table;
+    size_t         avail = lvd->partition_map_lable_length;
+    unsigned int   i;
+
+    if (avail > sizeof(lvd->partition_map_table)) {
+        avail = sizeof(lvd->partition_map_table);
+    }
+    for (i = 0; i < lvd->num_partition_maps; i++) {
+        uint8_t type, len;
+        if (avail < 2) {
+            break;
+        }
+        type = map[0];
+        len  = map[1];
+        if (len < 2 || (size_t)len > avail) {
+            break;
+        }
+        if (type == 1 && len == 6) {
+            return (int)_get_u16(map + 4);
+        }
+        map   += len;
+        avail -= len;
+    }
+    return -1;
+}
+
 int udfread_open_input(udfread *udf, udfread_block_input *input/*, int partition*/)
 {
     struct volume_descriptor_set vds;
@@ -1218,9 +1256,26 @@ int udfread_open_input(udfread *udf, udfread_block_input *input/*, int partition
         return -1;
     }
 
-    /* read Volume Descriptor Sequence */
-    if (_read_vds(input, 0, &vds) < 0) {
+    /* read Volume Descriptor Sequence
+     *
+     * -1 = "any partition", so the LVD is available to consult. Requiring the
+     * Partition Descriptor's number to equal a hardcoded 0 rejects any conformant
+     * disc that numbers its partition otherwise — the Windows 11 25H2 installer
+     * ISO declares 0x0BAD in both its Partition Descriptor and its LVD partition
+     * map, and was refused outright.
+     */
+    if (_read_vds(input, -1, &vds) < 0) {
         return -1;
+    }
+    {
+        int want = _lvd_type1_partition(&vds.lvd);
+        if (want >= 0 && (uint16_t)want != vds.pd.number) {
+            /* A different physical partition than the one we happened to read
+               first — re-read the sequence asking for the one the LVD names. */
+            if (_read_vds(input, want, &vds) < 0) {
+                return -1;
+            }
+        }
     }
 
     /* validate logical volume structure */
