@@ -16,24 +16,20 @@
 # This is the one commit here upstream would never take. Leave it out of anything
 # sent to VideoLAN.
 #
-# this is the one dependency built shared, and the reason is legal, not technical.
-# libudfread is LGPL 2.1; every other vendored library here is under a permissive
-# licence and gets linked statically. The LGPL lets a closed-linking program use
-# the library only if the user can substitute their own build of it, and §6(b)
-# names a shared library as the way to satisfy that: the loader picks the library
-# up at run time, so replacing the file replaces the code. Static linking would
-# instead drag the whole application under the LGPL's relinking obligations.
+# It is built static and linked into the application, as every dependency is, and
+# the licence is what shapes how. libudfread is LGPL 2.1, which lets a closed
+# program carry it on condition that whoever receives the program can relink it
+# against their own build of the library (§6(a)). The relink kit each public
+# release publishes is that: the program's own code as one object, every library
+# it links, and the script that links them (the application's CMakeLists.txt,
+# under "The relink kit").
 #
-# What that costs us, and where it is paid:
+# What that asks of this file:
 #
-#   * the library is versioned exactly as upstream's meson does (soname 3), so our
-#     copy is interchangeable with a distribution's libudfread.so.3 — which is the
-#     substitutability the licence is asking for, not a formality;
-#   * the symbols have to be exported (UDFREAD_API_EXPORT below) rather than left
-#     internal to our binary, which was upstream's "embed_udfread" mode;
-#   * the built library has to travel with the application — a POST_BUILD copy in
-#     the app's CMakeLists puts it inside the .app bundle / beside the executable,
-#     and the executable carries an rpath pointing there;
+#   * a static library, which the program links and the kit carries;
+#   * nothing marked for export. UDFREAD_API_EXPORT, upstream's switch for a
+#     shared library's exports, stays off: in a static library it would make the
+#     program export the API instead;
 #   * the licence text has to reach a recipient of the binary. It does, as
 #     `licenses/License-libudfread.txt` in the application tree, shipped with
 #     every other component's notice — nothing is installed from here.
@@ -104,39 +100,20 @@ configure_file(
     "${NCOMM_UDFREAD_GEN}/udfread-version.h"
     @ONLY)
 
-# --- Shared-library version -------------------------------------------------
-# Independent of the release version above, and NOT derived from it: upstream's
-# meson.build carries it separately as libudfread_soname_version = '3.0.0'. It is
-# what a distribution's libudfread.so.3 / libudfread.3.dylib is named, so matching
-# it is what lets a user swap their copy in for ours. ncomm-deps.cmake knows the
-# major number too — bump both together, or the app's configure fails loudly
-# looking for a library that is no longer there.
-set(NCOMM_UDFREAD_SOVERSION 3)
-set(NCOMM_UDFREAD_LIBVERSION 3.0.0)
-
 # --- The library ------------------------------------------------------------
-# shared, explicitly, and NOT via BUILD_SHARED_LIBS — the parent CMakeLists forces
-# that off for every other dependency, so the keyword here is what makes this one
-# the exception. The licence reason is at the top of this file.
-add_library(udfread SHARED
+# static, as every dependency of the application is. The parent CMakeLists sets
+# BUILD_SHARED_LIBS off for all of them; the keyword says the same for a standalone
+# clone of the fork. The licence reason is at the top of this file.
+add_library(udfread STATIC
     "${NCOMM_UDFREAD_DIR}/src/udfread.c"
     "${NCOMM_UDFREAD_DIR}/src/ecma167.c"
     "${NCOMM_UDFREAD_DIR}/src/default_blockinput.c"
     "${NCOMM_UDFREAD_DIR}/src/udfread-version.c"
 )
 
-set_target_properties(udfread PROPERTIES
-    VERSION   "${NCOMM_UDFREAD_LIBVERSION}"
-    SOVERSION "${NCOMM_UDFREAD_SOVERSION}"
-    # Everything that is not marked UDF_PUBLIC stays internal, exactly as upstream's
-    # meson does it (gnu_symbol_visibility: 'hidden'). Without this the library would
-    # export its whole internal surface — _read_vds, the ecma167 parsers, the
-    # partition helper — and each of those becomes an accidental promise to keep.
-    C_VISIBILITY_PRESET hidden
-    # macOS: the install name stays @rpath-relative through installation, so the copy
-    # that ends up inside the .app bundle is found via the executable's rpath rather
-    # than by the absolute path of the build machine's dependency prefix.
-    INSTALL_NAME_DIR "@rpath")
+# Hidden, as upstream's meson builds it (gnu_symbol_visibility: 'hidden'): none of
+# the library's symbols is exported from the program it is linked into.
+set_target_properties(udfread PROPERTIES C_VISIBILITY_PRESET hidden)
 
 target_include_directories(udfread
     PUBLIC  "${NCOMM_UDFREAD_DIR}/src"
@@ -144,11 +121,10 @@ target_include_directories(udfread
 
 # HAVE_CONFIG_H and _ISOC99_SOURCE are unconditional in upstream's meson;
 # _POSIX_C_SOURCE is what makes pread() visible off Windows. UDFREAD_API_EXPORT is
-# what turns UDF_PUBLIC into a real export marker (dllexport / default visibility)
-# — upstream's non-embedded mode, and the reason the app can bind to this library
-# at run time at all. PRIVATE: consumers must NOT see it, or the same header would
-# try to export the API a second time from their side.
-target_compile_definitions(udfread PRIVATE HAVE_CONFIG_H=1 _ISOC99_SOURCE UDFREAD_API_EXPORT)
+# left off (the note at the top), so UDF_PUBLIC is nothing: on Windows it would be
+# dllexport, and the program would export the API with an import library of its
+# own written beside the executable.
+target_compile_definitions(udfread PRIVATE HAVE_CONFIG_H=1 _ISOC99_SOURCE)
 if(NOT WIN32)
     target_compile_definitions(udfread PRIVATE _POSIX_C_SOURCE=200809L)
 endif()
@@ -165,17 +141,9 @@ endif()
 target_link_libraries(udfread PRIVATE Threads::Threads)
 
 # Install into the bootstrap prefix. Upstream builds with meson, so its CMake —
-# and therefore its install rules — are ours.
-#
-# All three destinations are needed because a shared library is a different file
-# on each platform: Library is the .so/.dylib, runtime is the Windows .dll (which
-# belongs beside executables, not in lib/), and ARCHIVE is the .lib import library
-# MSVC links against. The versioned names and their symlinks come along with the
-# library rule — lib/libudfread.so.3 → libudfread.so.3.0.0, and so on.
-install(TARGETS udfread
-        LIBRARY DESTINATION lib
-        RUNTIME DESTINATION bin
-        ARCHIVE DESTINATION lib)
+# and therefore its install rules — are ours. A static library is one file:
+# libudfread.a, or udfread.lib on Windows.
+install(TARGETS udfread ARCHIVE DESTINATION lib)
 install(FILES "${NCOMM_UDFREAD_DIR}/src/udfread.h"
               "${NCOMM_UDFREAD_DIR}/src/blockinput.h"
               "${NCOMM_UDFREAD_GEN}/udfread-version.h"
